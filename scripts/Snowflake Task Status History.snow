@@ -1,0 +1,127 @@
+-----------------------------------------------------------------------
+-- query the status of the last schedule of all tasks from BI database
+-----------------------------------------------------------------------
+select *
+from table(information_schema.task_history())
+where database_name = 'BI'
+order by name;
+
+-----------------------------------------------------------------------
+-- query the detailed history of a task scheduled
+-----------------------------------------------------------------------
+select name
+    ,datediff(second, scheduled_time, completed_time) duration
+    ,datediff(second, scheduled_time, query_start_time) delay
+    ,datediff(second, query_start_time, completed_time) executtion_time
+    ,scheduled_time
+    ,query_start_time
+    ,completed_time
+    ,next_scheduled_time
+from table(information_schema.task_history(
+    scheduled_time_range_start=>dateadd('day',-2,current_timestamp())
+    ,result_limit => 100
+    ,task_name=>'SELLSIDE_ACCOUNT_DATA_SUMMARY_POPULATE_HOURLY'
+  ))
+where database_name = 'BI'
+order by scheduled_time desc;
+
+
+-----------------------------------------------------------------------
+-- Create a task status view
+-----------------------------------------------------------------------
+CREATE OR REPLACE VIEW BI._CONTROL_LOGIC.STATE_OF_THE_TASKS
+    COMMENT = 'Display the hirarchy and status of the data processing tasks'
+AS
+WITH _TASK_LAST_RUN AS (
+    SELECT *
+    FROM (
+        SELECT CONCAT(DATABASE_NAME,'.',SCHEMA_NAME,'.',NAME) AS FQ_TASK_NAME
+            ,STATE STATE_OF_LAST_RUN
+            ,ERROR_MESSAGE
+            ,SCHEDULED_TIME
+            ,COMPLETED_TIME
+            ,NEXT_SCHEDULED_TIME
+            ,ROW_NUMBER() OVER (PARTITION BY NAME ORDER BY SCHEDULED_TIME DESC) RN
+            ,ROUND(DATEDIFF(SECOND, SCHEDULED_TIME, COMPLETED_TIME),0) DURATION_IN_SECOND
+            ,CASE WHEN NAME IN (
+                'BUYSIDE_ACCOUNT_DATA_SUMMARY_POPULATE',
+                'SELLSIDE_ACCOUNT_DATA_SUMMARY_POPULATE',
+                'BUYSIDE_COMMISSION_DATA_SUMMARY_POPULATE'
+              ) THEN 'YES' ELSE '   ' END CORE_TASK
+        FROM TABLE (INFORMATION_SCHEMA.TASK_HISTORY(RESULT_LIMIT => 1000))
+        WHERE SCHEDULED_TIME < CURRENT_TIMESTAMP
+            AND DATABASE_NAME = 'BI'
+            AND STATE <> 'EXECUTING'
+        )
+    WHERE RN = 1
+    )
+  ,_TASKS AS (
+//    SELECT *, CONCAT (DATABASE_NAME,'.',SCHEMA_NAME,'.',NAME) AS FQ_TASK_NAME 
+//    FROM TABLE (INFORMATION_SCHEMA.TASK_DEPENDENTS(
+//        TASK_NAME => 'BI._CONTROL_LOGIC.SELLSIDE_ACCOUNT_DATA_AVAILABILITY_DETECT', 
+//        RECURSIVE => TRUE
+//    ))
+//    UNION ALL
+    SELECT *, CONCAT (DATABASE_NAME,'.',SCHEMA_NAME,'.',NAME) AS FQ_TASK_NAME 
+    FROM TABLE (INFORMATION_SCHEMA.TASK_DEPENDENTS(
+        TASK_NAME => 'BI._CONTROL_LOGIC.BOTHSIDE_ACCOUNT_METADATA_MAPPINGS_UPDATE', 
+        RECURSIVE => TRUE
+    )))
+  ,_TASK_HIERARCHY AS (
+    SELECT SYS_CONNECT_BY_PATH(NAME, ' / ') PATH
+        ,FQ_TASK_NAME
+        ,PREDECESSOR
+        ,CONCAT(REPEAT('- ', LEVEL - 1),NAME) TASK_HIERARCHY
+        ,LEVEL
+    FROM _TASKS 
+    START WITH FQ_TASK_NAME IN (
+//        'BI._CONTROL_LOGIC.SELLSIDE_ACCOUNT_DATA_AVAILABILITY_DETECT',
+        'BI._CONTROL_LOGIC.BOTHSIDE_ACCOUNT_METADATA_MAPPINGS_UPDATE'
+        )
+    CONNECT BY PREDECESSOR = PRIOR FQ_TASK_NAME
+    )
+SELECT T.NAME TASK_NAME
+  ,TH.TASK_HIERARCHY
+  --,T.OWNER TASK_OWNER
+  --,T.COMMENT TASK_COMMENT
+  --,T.WAREHOUSE
+  ,T.SCHEDULE
+  ,T.STATE
+  --,T.DEFINITION
+  --,T.CREATED_ON
+  --,T.DATABASE_NAME
+  ,TLR.STATE_OF_LAST_RUN
+  --,TLR.ERROR_MESSAGE
+  ,TLR.CORE_TASK
+  ,TLR.DURATION_IN_SECOND
+  ,TLR.SCHEDULED_TIME
+  ,TLR.COMPLETED_TIME
+  ,TLR.NEXT_SCHEDULED_TIME
+  --,T.PREDECESSOR
+FROM _TASKS T
+LEFT JOIN _TASK_HIERARCHY TH ON T.FQ_TASK_NAME = TH.FQ_TASK_NAME
+LEFT JOIN _TASK_LAST_RUN TLR ON TLR.FQ_TASK_NAME = T.FQ_TASK_NAME
+ORDER BY PATH, LEVEL;
+
+-----------------------------------------------------------------------
+-- Check task status by view
+-----------------------------------------------------------------------
+SELECT * FROM BI._CONTROL_LOGIC.STATE_OF_THE_TASKS;
+
+
+-----------------------------------------------------------------------
+-- Check the task final competion time by quering the last chained tesk
+-----------------------------------------------------------------------
+create or replace view BI._CONTROL_LOGIC.DATA_AGGREGATION_COMPLETION_TIME
+comment = 'Display the completion time of the Spend_Revenue_Commission_Aggregation chain'
+as
+select 'Spend_Revenue_Commission_Aggregation_Chain' Task_Stack
+    ,completed_time
+from table(information_schema.task_history(
+    scheduled_time_range_start=>dateadd('day',-1,current_timestamp())
+    ,task_name=>'SELLSIDE_ACCOUNT_DATA_SUMMARY_PUBLISH'
+    ,result_limit => 30
+  ))
+--where database_name = 'BI'
+order by completed_time desc
+limit 1;

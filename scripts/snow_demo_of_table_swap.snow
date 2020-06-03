@@ -1,0 +1,57 @@
+--=========================================================
+-- A snowflake demo to load data consistently
+--=========================================================
+--
+-- Choose a proper demo location 
+--
+USE DATABASE BI_TEST;
+USE SCHEMA _TEST;
+
+-- 
+-- Create demo table 1 with some data in it
+-- 
+CREATE OR REPLACE TRANSIENT TABLE DEMO_DATA_1
+AS
+SELECT 0 DATA_PT,
+	DATEADD(D, -UNIFORM(1, 60, RANDOM(1)), CURRENT_DATE())::DATE DATA_TS, 
+    1 DATA_I1,
+    UNIFORM(0, 15, RANDOM(11)) DATA_I2,
+    NULLIF(UNIFORM(0, 15, RANDOM(111)),0) DATA_I3,
+    RANDSTR(UNIFORM(1, 10, RANDOM()), RANDOM()) DATA_A1,
+    RANDSTR(ABS(RANDOM()) % 10, RANDOM()) DATA_A2,
+    NULLIF(RANDSTR(UNIFORM(0, 10, RANDOM()), RANDOM()),'') DATA_A3,
+    UNIFORM(0, 1000, RANDOM(10)) VALUE_I1,
+    UNIFORM(0, 1500, RANDOM(15))/10 VALUE_D1
+FROM TABLE(GENERATOR(ROWCOUNT => 1000)) V 
+ORDER BY 1;
+
+-- 
+-- Create demo table 2 as an empty table in different schema
+-- 
+CREATE OR REPLACE TRANSIENT TABLE _TEST_.DEMO_DATA_2 LIKE DEMO_DATA_1;
+
+-- 
+-- Check the table contents in two demo tables
+-- 
+SELECT * FROM _TEST.DEMO_DATA_1 LIMIT 100;      -- it contains data
+
+SELECT * FROM _TEST_.DEMO_DATA_2 LIMIT 100;     -- it is emprty
+
+--
+-- Swap the table defintion and contents of the demo tables
+--
+ALTER TABLE IF EXISTS _TEST_.DEMO_DATA_2 SWAP WITH _TEST.DEMO_DATA_1;
+
+-- 
+-- Check the table contents again and see what happened
+-- 
+SELECT * FROM _TEST.DEMO_DATA_1 LIMIT 100;        -- it is emprty now
+
+SELECT * FROM _TEST_.DEMO_DATA_2 LIMIT 100;       -- it got the data now
+
+--
+-- Drop the demo tables
+--
+DROP TABLE _TEST.DEMO_DATA_1;
+
+DROP TABLE _TEST_.DEMO_DATA_2;
